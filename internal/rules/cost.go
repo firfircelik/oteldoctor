@@ -398,8 +398,8 @@ func (r *tracesNoSamplingRule) Check(ctx RuleContext) []model.Diagnostic {
 
 		diags = append(diags, model.Diagnostic{
 			Severity: model.SeverityHigh,
-			Message:  fmt.Sprintf("Traces pipeline %q has no sampling or filtering processor configured in production. Without sampling, all traces are exported, which may cause high backend costs and network egress charges.", signal),
-			Fix:      "Consider adding a tailsampling, probabilisticsampler, or filter processor to control trace volume.",
+			Message:  fmt.Sprintf("Traces pipeline %q has no sampling or filtering processor configured in production. Without collector-level sampling, all received traces are exported, which may cause high backend costs and network egress charges. Note: SDK-level head sampling may already reduce trace volume.", signal),
+			Fix:      "Consider adding a tailsampling, probabilisticsampler, or filter processor to control trace volume at the collector level.",
 			Location: pl.Location,
 		})
 	}

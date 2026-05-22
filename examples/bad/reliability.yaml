@@ -1,10 +1,23 @@
 receivers:
   otlp:
+    tls:
+      cert_file: /tls/cert.pem
     protocols:
       grpc:
         endpoint: "0.0.0.0:4317"
 
 processors:
+  resource:
+    attributes:
+      - key: service.name
+        value: collector
+        action: upsert
+      - key: deployment.environment
+        value: production
+        action: upsert
+      - key: service.version
+        value: "1.0.0"
+        action: upsert
   batch:
     timeout: 200ms
   memory_limiter:
@@ -16,14 +29,14 @@ processors:
 exporters:
   otlphttp:
     endpoint: "https://backend:4318"
-  debug:
-    verbosity: detailed
+    tls:
+      insecure_skip_verify: true
 
 service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [batch, filter, memory_limiter]
+      processors: [resource, batch, filter, memory_limiter]
       exporters: [otlphttp]
     metrics:
       receivers: [otlp]

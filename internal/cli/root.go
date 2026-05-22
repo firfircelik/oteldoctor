@@ -5,6 +5,8 @@ import (
 )
 
 var version = "0.1.0-dev"
+var commit = "unknown"
+var date = "unknown"
 
 func SetVersion(v string) {
 	version = v

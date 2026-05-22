@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/firfircelik/oteldoctor/internal/model"
+	"gopkg.in/yaml.v3"
 )
 
 func TestFixMemLimiterOrder_DryRun(t *testing.T) {
@@ -305,5 +306,189 @@ func TestUnifiedDiff_Identical(t *testing.T) {
 			}
 			t.Errorf("identical files should have no change markers, got line: %q", line)
 		}
+	}
+}
+
+func TestFixMemLimiterOrder_DiffHasOneHunk(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "cfg.yaml")
+	os.WriteFile(f, []byte(`receivers:
+  otlp: {}
+processors:
+  memory_limiter:
+    limit_mib: 512
+  batch:
+    timeout: 200ms
+exporters:
+  debug: {}
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch, memory_limiter]
+      exporters: [debug]
+`), 0644)
+
+	fixer := New(true)
+	diags := []model.Diagnostic{{RuleID: "OTEL-REL-102"}}
+	plans, _ := fixer.Fix(f, diags)
+
+	if len(plans) != 1 {
+		t.Fatalf("expected 1 plan, got %d", len(plans))
+	}
+
+	diff := plans[0].Diff
+	if !strings.Contains(diff, "---") {
+		t.Error("diff should have --- header")
+	}
+	if !strings.Contains(diff, "+++") {
+		t.Error("diff should have +++ header")
+	}
+	if !strings.Contains(diff, "@@") {
+		t.Error("diff should have @@ hunk header")
+	}
+
+	addLines := 0
+	delLines := 0
+	for _, line := range strings.Split(diff, "\n") {
+		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
+			addLines++
+		}
+		if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
+			delLines++
+		}
+	}
+	if addLines != 1 {
+		t.Errorf("expected exactly 1 added line, got %d", addLines)
+	}
+	if delLines != 1 {
+		t.Errorf("expected exactly 1 deleted line, got %d", delLines)
+	}
+}
+
+func TestFixMemLimiterOrder_ProducesValidYAML(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "cfg.yaml")
+	os.WriteFile(f, []byte(`receivers:
+  otlp: {}
+processors:
+  memory_limiter:
+    limit_mib: 512
+  batch:
+    timeout: 200ms
+exporters:
+  debug: {}
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch, memory_limiter]
+      exporters: [debug]
+`), 0644)
+
+	fixer := New(true)
+	diags := []model.Diagnostic{{RuleID: "OTEL-REL-102"}}
+	plans, _ := fixer.Fix(f, diags)
+
+	modified := plans[0].Modified
+
+	var node yaml.Node
+	if err := yaml.Unmarshal(modified, &node); err != nil {
+		t.Fatalf("fix produced invalid YAML: %v\n%s", err, string(modified))
+	}
+
+	text := string(modified)
+	for _, key := range []string{"receivers:", "exporters:", "service:", "pipelines:"} {
+		if !strings.Contains(text, key) {
+			t.Errorf("modified YAML should contain %q", key)
+		}
+	}
+	if strings.Contains(text, "processors: [batch, memory_limiter]") {
+		t.Error("modified YAML should NOT have batch before memory_limiter")
+	}
+	if !strings.Contains(text, "processors: [memory_limiter, batch]") {
+		t.Error("modified YAML should have memory_limiter first")
+	}
+}
+
+func TestFixMemLimiterOrder_ResolvesDiagnostic(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "cfg.yaml")
+	os.WriteFile(f, []byte(`receivers:
+  otlp: {}
+processors:
+  memory_limiter:
+    limit_mib: 512
+  batch:
+    timeout: 200ms
+exporters:
+  debug: {}
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch, memory_limiter]
+      exporters: [debug]
+`), 0644)
+
+	fixer := New(true)
+	diags := []model.Diagnostic{{RuleID: "OTEL-REL-102"}}
+	plans, _ := fixer.Fix(f, diags)
+	modified := plans[0].Modified
+
+	// Re-parse the fixed YAML and check processors order
+	var doc yaml.Node
+	yaml.Unmarshal(modified, &doc)
+	root := doc.Content[0]
+	svc := findValue(root, "service")
+	pipes := findValue(svc, "pipelines")
+	traces := findValue(pipes, "traces")
+	procs := findValue(traces, "processors")
+
+	if procs == nil || procs.Kind != yaml.SequenceNode {
+		t.Fatal("processors not found in fixed YAML")
+	}
+	if len(procs.Content) < 2 {
+		t.Fatal("expected at least 2 processors")
+	}
+	if procs.Content[0].Value != "memory_limiter" {
+		t.Errorf("expected memory_limiter first, got %q", procs.Content[0].Value)
+	}
+}
+
+func TestFixMemLimiterOrder_WriteProducesValidYAML(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "cfg.yaml")
+	os.WriteFile(f, []byte(`receivers:
+  otlp: {}
+processors:
+  memory_limiter:
+    limit_mib: 512
+  batch:
+    timeout: 200ms
+exporters:
+  debug: {}
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch, memory_limiter]
+      exporters: [debug]
+`), 0644)
+
+	fixer := New(false)
+	diags := []model.Diagnostic{{RuleID: "OTEL-REL-102"}}
+	plans, err := fixer.Fix(f, diags)
+	if err != nil {
+		t.Fatalf("fix error: %v", err)
+	}
+	if !plans[0].Applied {
+		t.Error("expected fix to be applied")
+	}
+
+	current, _ := os.ReadFile(f)
+	var node yaml.Node
+	if err := yaml.Unmarshal(current, &node); err != nil {
+		t.Fatalf("written file contains invalid YAML: %v\n%s", err, string(current))
 	}
 }

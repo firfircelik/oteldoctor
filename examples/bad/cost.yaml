@@ -1,13 +1,28 @@
 receivers:
   otlp:
+    tls:
+      cert_file: /tls/cert.pem
     protocols:
       grpc:
         endpoint: "0.0.0.0:4317"
 
 processors:
+  memory_limiter:
+    limit_mib: 512
+  resource:
+    attributes:
+      - key: service.name
+        value: collector
+        action: upsert
+      - key: deployment.environment
+        value: production
+        action: upsert
+      - key: service.version
+        value: "1.0.0"
+        action: upsert
   attributes:
     actions:
-      - key: http.url
+      - key: client.address
         action: upsert
       - key: user.id
         action: insert
@@ -31,13 +46,18 @@ connectors:
     histogram:
       explicit: {}
 
+extensions:
+  health_check:
+    endpoint: "localhost:13133"
+
 service:
+  extensions: [health_check]
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [attributes, transform, batch]
+      processors: [memory_limiter, resource, attributes, transform, batch]
       exporters: [debug]
     metrics:
       receivers: [otlp, spanmetrics]
-      processors: [batch]
+      processors: [memory_limiter, batch]
       exporters: [spanmetrics, debug]

@@ -2,6 +2,7 @@ package output
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -481,6 +482,40 @@ func TestSARIFFormatter_ValidShape(t *testing.T) {
 	region, _ := pl["region"].(map[string]any)
 	if int(region["startLine"].(float64)) != 10 {
 		t.Errorf("expected startLine 10, got %v", region["startLine"])
+	}
+
+	// Verify rule metadata quality
+	rulesList, _ := driver["rules"].([]any)
+	found := false
+	for _, r := range rulesList {
+		rm := r.(map[string]any)
+		if rm["id"] == "OTEL-SEC-202" {
+			found = true
+			sd, _ := rm["shortDescription"].(map[string]any)
+			if sd == nil || sd["text"] == "OTEL-SEC-202" {
+				t.Error("shortDescription should be rule title, not rule ID")
+			}
+			if !strings.Contains(fmt.Sprintf("%v", sd["text"]), "secret") {
+				t.Error("shortDescription should mention secret detection")
+			}
+
+			fd, _ := rm["fullDescription"].(map[string]any)
+			if fd == nil || fd["text"] == "OTEL-SEC-202" {
+				t.Error("fullDescription should explain why the rule matters, not be the rule ID")
+			}
+
+			help, _ := rm["help"].(map[string]any)
+			if help == nil {
+				t.Error("expected help section with remediation guidance")
+			} else if help["text"] == nil || help["text"] == "" {
+				t.Error("help.text should contain fix guidance")
+			}
+
+			break
+		}
+	}
+	if !found {
+		t.Error("OTEL-SEC-202 rule metadata not found in SARIF output")
 	}
 }
 

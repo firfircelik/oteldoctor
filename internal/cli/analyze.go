@@ -25,6 +25,8 @@ func newAnalyzeCmd() *cobra.Command {
 	var recursive bool
 	var include []string
 	var exclude []string
+	var category string
+	var ruleFilter string
 
 	cmd := &cobra.Command{
 		Use:   "analyze <path>",
@@ -46,6 +48,8 @@ If <path> is a directory, all YAML files are scanned and analyzed.`,
 	cmd.Flags().BoolVar(&recursive, "recursive", true, "Recursively scan subdirectories")
 	cmd.Flags().StringArrayVar(&include, "include", nil, "Include files matching glob pattern (can repeat)")
 	cmd.Flags().StringArrayVar(&exclude, "exclude", nil, "Exclude files matching glob pattern (can repeat)")
+	cmd.Flags().StringVar(&category, "category", "", "Filter by category: structural, reliability, security, cost, semantic, kubernetes")
+	cmd.Flags().StringVar(&ruleFilter, "rule", "", "Filter by specific rule ID (e.g. OTEL-REL-102)")
 
 	return cmd
 }
@@ -82,6 +86,8 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	recursive, _ := cmd.Flags().GetBool("recursive")
 	include, _ := cmd.Flags().GetStringArray("include")
 	exclude, _ := cmd.Flags().GetStringArray("exclude")
+	category, _ := cmd.Flags().GetString("category")
+	ruleFilter, _ := cmd.Flags().GetString("rule")
 
 	var pol *policy.Policy
 	if policyPath != "" {
@@ -121,12 +127,13 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("scanning: %w", err)
 	}
 
-	files, displayPaths, err := extractConfigMaps(files)
+	files, displayPaths, extractedConfigs, err := extractConfigMaps(files)
 	if err != nil {
 		return fmt.Errorf("extracting: %w", err)
 	}
+	defer extractor.Cleanup(extractedConfigs)
 
-	isSingleFile := !fiIsDir(path)
+	isSingleFile := !fiIsDir(path) && len(files) == 1
 
 	var k8sWorkloads []*k8s.Workload
 	var k8sServices []*k8s.ServiceInfo
@@ -188,6 +195,8 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		allDiags = append(allDiags, diags...)
 	}
 
+	allDiags = filterDiagnostics(allDiags, category, ruleFilter)
+
 	var formatter output.Formatter
 	switch format {
 	case "json":
@@ -248,14 +257,15 @@ func resolveFiles(path string, recursive bool, include, exclude []string) ([]str
 	return files, nil
 }
 
-func extractConfigMaps(files []string) ([]string, map[string]string, error) {
+func extractConfigMaps(files []string) ([]string, map[string]string, []extractor.EmbeddedConfig, error) {
 	result := []string{}
 	displayPaths := map[string]string{}
+	var extracted []extractor.EmbeddedConfig
 
 	for _, f := range files {
 		ok, err := extractor.IsConfigMap(f)
 		if err != nil {
-			return nil, nil, fmt.Errorf("checking ConfigMap %s: %w", f, err)
+			return nil, nil, nil, fmt.Errorf("checking ConfigMap %s: %w", f, err)
 		}
 		if !ok {
 			result = append(result, f)
@@ -265,15 +275,17 @@ func extractConfigMaps(files []string) ([]string, map[string]string, error) {
 
 		configs, err := extractor.Extract(f)
 		if err != nil {
-			return nil, nil, fmt.Errorf("extracting ConfigMap %s: %w", f, err)
+			extractor.Cleanup(extracted)
+			return nil, nil, nil, fmt.Errorf("extracting ConfigMap %s: %w", f, err)
 		}
 		for _, c := range configs {
 			result = append(result, c.Path)
 			displayPaths[c.Path] = extractor.SourcePathDisplay(c.SourceFile, c.ConfigMapName, c.DataKey)
 		}
+		extracted = append(extracted, configs...)
 	}
 
-	return result, displayPaths, nil
+	return result, displayPaths, extracted, nil
 }
 
 func parseK8sManifests(files []string) ([]*k8s.Workload, []*k8s.ServiceInfo) {
@@ -304,4 +316,22 @@ func findLinkedService(configFile string, services []*k8s.ServiceInfo) *k8s.Serv
 		return services[0]
 	}
 	return nil
+}
+
+func filterDiagnostics(diags []model.Diagnostic, category, ruleID string) []model.Diagnostic {
+	if category == "" && ruleID == "" {
+		return diags
+	}
+
+	result := make([]model.Diagnostic, 0, len(diags))
+	for _, d := range diags {
+		if category != "" && string(d.Category) != category {
+			continue
+		}
+		if ruleID != "" && d.RuleID != ruleID {
+			continue
+		}
+		result = append(result, d)
+	}
+	return result
 }

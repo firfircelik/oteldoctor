@@ -438,13 +438,19 @@ func (r *tlsMissingExporterRule) Check(ctx RuleContext) []model.Diagnostic {
 
 		eps := findEndpoints(cfg)
 		hasRemote := false
+		hasPlainHTTP := false
 		for _, ep := range eps {
+			if isPlainHTTP(ep) {
+				hasPlainHTTP = true
+			}
 			if !isLocalhostEndpoint(ep) && extractHost(ep) != "" {
 				hasRemote = true
-				break
 			}
 		}
 		if !hasRemote {
+			continue
+		}
+		if hasPlainHTTP {
 			continue
 		}
 

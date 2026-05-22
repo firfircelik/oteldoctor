@@ -62,6 +62,10 @@ func exporterConfig(cfg *model.CollectorConfig, id string) map[string]any {
 	return m
 }
 
+func isEmptyPipeline(pl model.Pipeline) bool {
+	return len(pl.Receivers) == 0 || len(pl.Exporters) == 0
+}
+
 // --- OTEL-REL-101: memory_limiter missing in production ---
 
 type memLimiterMissingRule struct{}
@@ -84,6 +88,9 @@ func (r *memLimiterMissingRule) Check(ctx RuleContext) []model.Diagnostic {
 	sev := pickSeverity(ctx.Profile, model.SeverityHigh, model.SeverityMedium, model.SeverityMedium)
 
 	for signal, pl := range ctx.Config.Service.Pipelines {
+		if isEmptyPipeline(pl) {
+			continue
+		}
 		if !hasProcessorType(signal, ctx.Graph, "memory_limiter") {
 			diags = append(diags, model.Diagnostic{
 				Severity: sev,
@@ -153,6 +160,9 @@ func (r *batchMissingRule) Check(ctx RuleContext) []model.Diagnostic {
 	sev := pickSeverity(ctx.Profile, model.SeverityMedium, model.SeverityLow, model.SeverityLow)
 
 	for signal, pl := range ctx.Config.Service.Pipelines {
+		if isEmptyPipeline(pl) {
+			continue
+		}
 		if !hasProcessorType(signal, ctx.Graph, "batch") {
 			diags = append(diags, model.Diagnostic{
 				Severity: sev,

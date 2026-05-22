@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/firfircelik/oteldoctor/internal/model"
+	"github.com/firfircelik/oteldoctor/internal/rules"
 )
 
 type sarifLog struct {
@@ -32,8 +33,14 @@ type sarifRule struct {
 	Name             string           `json:"name"`
 	ShortDescription sarifMessage     `json:"shortDescription"`
 	FullDescription  sarifMessage     `json:"fullDescription"`
+	Help             *sarifHelp       `json:"help,omitempty"`
 	HelpURI          string           `json:"helpUri,omitempty"`
 	Properties       sarifRuleProps   `json:"properties"`
+}
+
+type sarifHelp struct {
+	Text     string `json:"text,omitempty"`
+	Markdown string `json:"markdown,omitempty"`
 }
 
 type sarifRuleProps struct {
@@ -80,7 +87,7 @@ func (f *SARIFFormatter) Format(diags []model.Diagnostic) (string, error) {
 		ruleSet[d.RuleID] = true
 	}
 
-	var rules []sarifRule
+	var sarifRules []sarifRule
 	for id := range ruleSet {
 		sev := "warning"
 		cat := "unknown"
@@ -91,11 +98,25 @@ func (f *SARIFFormatter) Format(diags []model.Diagnostic) (string, error) {
 				break
 			}
 		}
-		rules = append(rules, sarifRule{
+
+		var help *sarifHelp
+		shortDesc := id
+		fullDesc := id
+		if doc, ok := rules.GetRuleDoc(id); ok {
+			shortDesc = doc.Title
+			fullDesc = doc.Why
+			help = &sarifHelp{
+				Text:     doc.HowToFix,
+				Markdown: "**How to fix:**\n\n" + doc.HowToFix,
+			}
+		}
+
+		sarifRules = append(sarifRules, sarifRule{
 			ID:   id,
 			Name: id,
-			ShortDescription: sarifMessage{Text: id},
-			FullDescription:  sarifMessage{Text: id},
+			ShortDescription: sarifMessage{Text: shortDesc},
+			FullDescription:  sarifMessage{Text: fullDesc},
+			Help:             help,
 			Properties: sarifRuleProps{
 				Category: cat,
 				Severity: sev,
@@ -152,7 +173,7 @@ func (f *SARIFFormatter) Format(diags []model.Diagnostic) (string, error) {
 					Driver: sarifDriver{
 						Name:           "oteldoctor",
 						InformationURI: "https://github.com/firfircelik/oteldoctor",
-						Rules:          rules,
+						Rules:          sarifRules,
 					},
 				},
 				Results: results,

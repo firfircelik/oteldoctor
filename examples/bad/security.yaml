@@ -5,24 +5,52 @@ receivers:
         endpoint: "0.0.0.0:4317"
 
 processors:
+  memory_limiter:
+    limit_mib: 512
+  resource:
+    attributes:
+      - key: service.name
+        value: collector
+        action: upsert
+      - key: deployment.environment
+        value: production
+        action: upsert
+      - key: service.version
+        value: "1.0.0"
+        action: upsert
+  tailsampling:
+    decision_wait: 10s
+    policies:
+      - name: keep-all
+        type: always_sample
   batch:
     timeout: 200ms
 
 exporters:
   otlphttp:
-    endpoint: "http://backend.example.com:4318"
+    endpoint: "http://api.datadoghq.com"
     headers:
-      X-API-KEY: "plaintext-secret-here"
+      DD-API-KEY: "plaintext-secret-here"
+    retry_on_failure:
+      enabled: true
+    sending_queue:
+      num_consumers: 10
   debug:
     verbosity: detailed
 
 extensions:
+  health_check:
+    endpoint: "localhost:13133"
   pprof:
     endpoint: "0.0.0.0:1777"
+  oauth2client:
+    client_id: collector
+    client_secret: "${env:CLIENT_SECRET}"
 
 service:
+  extensions: [health_check]
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [batch]
+      processors: [memory_limiter, resource, tailsampling, batch]
       exporters: [otlphttp, debug]

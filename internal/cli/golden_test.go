@@ -165,7 +165,7 @@ service:
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)
 
-	cmd.SetArgs([]string{f})
+	cmd.SetArgs([]string{"--category", "structural", f})
 	cmd.Execute()
 
 	out := buf.String()
@@ -216,7 +216,7 @@ service:
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)
 
-	cmd.SetArgs([]string{"--profile", "production", f})
+	cmd.SetArgs([]string{"--profile", "production", "--category", "security", f})
 	cmd.Execute()
 
 	out := buf.String()
@@ -269,7 +269,7 @@ service:
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)
 
-	cmd.SetArgs([]string{f})
+	cmd.SetArgs([]string{"--category", "semantic", f})
 	cmd.Execute()
 
 	out := buf.String()
@@ -344,6 +344,7 @@ exporters:
     headers:
       DD-API-KEY: "abc123secret"
       Authorization: "Bearer token123"
+      api-key: "super-secret-value-123"
 service:
   pipelines:
     traces:
@@ -360,11 +361,11 @@ service:
 	cmd.Execute()
 	textOut := buf.String()
 
-	if strings.Contains(textOut, "abc123secret") {
-		t.Error("text output must not contain secret value")
-	}
-	if strings.Contains(textOut, "token123") {
-		t.Error("text output must not contain token value")
+	secrets := []string{"abc123secret", "token123", "super-secret-value-123"}
+	for _, s := range secrets {
+		if strings.Contains(textOut, s) {
+			t.Errorf("text output must not contain secret value %q", s)
+		}
 	}
 	if !strings.Contains(textOut, "REDACTED") {
 		t.Error("text output must contain REDACTED marker")
@@ -379,13 +380,41 @@ service:
 	cmd2.Execute()
 	jsonOut := buf2.String()
 
-	if strings.Contains(jsonOut, "abc123secret") {
-		t.Error("JSON output must not contain secret value")
-	}
-	if strings.Contains(jsonOut, "token123") {
-		t.Error("JSON output must not contain token value")
+	for _, s := range secrets {
+		if strings.Contains(jsonOut, s) {
+			t.Errorf("JSON output must not contain secret value %q", s)
+		}
 	}
 	if !strings.Contains(jsonOut, "REDACTED") {
 		t.Error("JSON output must contain REDACTED marker")
+	}
+}
+
+func TestGolden_SecretRedacted_AllFormats(t *testing.T) {
+	fixture := filepath.Join("..", "..", "examples", "bad", "security.yaml")
+	if _, err := os.Stat(fixture); err != nil {
+		t.Skipf("fixture not found: %s", fixture)
+	}
+
+	secret := "plaintext-secret-here"
+	formats := []string{"text", "json", "sarif"}
+
+	for _, f := range formats {
+		t.Run(f, func(t *testing.T) {
+			cmd := newAnalyzeCmd()
+			buf := new(bytes.Buffer)
+			cmd.SetOut(buf)
+			cmd.SetErr(buf)
+			cmd.SetArgs([]string{"--format", f, fixture})
+			cmd.Execute()
+			out := buf.String()
+
+			if strings.Contains(out, secret) {
+				t.Errorf("%s output must not contain secret value %q", f, secret)
+			}
+			if !strings.Contains(out, "REDACTED") {
+				t.Errorf("%s output must contain REDACTED marker", f)
+			}
+		})
 	}
 }

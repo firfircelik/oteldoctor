@@ -222,6 +222,53 @@ func TestBatchMissing_LowSeverityDevelopment(t *testing.T) {
 	}
 }
 
+func TestBatchMissing_SkipsEmptyPipeline(t *testing.T) {
+	cfg := relConfig()
+	setRelReceiver(cfg, "otlp", 2)
+	setRelProcessor(cfg, "batch", 6)
+	setRelExporter(cfg, "debug", nil, 10)
+	setRelPipeline(cfg, "empty", nil, nil, nil, 14)
+
+	g := graph.Build(cfg)
+	rule := NewBatchMissingRule()
+	diags := rule.Check(RuleContext{Config: cfg, Graph: g})
+
+	if len(diags) != 0 {
+		t.Fatalf("expected 0 diagnostics for empty pipeline, got %d", len(diags))
+	}
+}
+
+func TestBatchMissing_ValidPipelineWithoutBatch(t *testing.T) {
+	cfg := relConfig()
+	setRelReceiver(cfg, "otlp", 2)
+	setRelProcessor(cfg, "memory_limiter", 6)
+	setRelExporter(cfg, "debug", nil, 10)
+	setRelPipeline(cfg, "traces", []string{"otlp"}, []string{"memory_limiter"}, []string{"debug"}, 14)
+
+	g := graph.Build(cfg)
+	rule := NewBatchMissingRule()
+	diags := rule.Check(RuleContext{Config: cfg, Graph: g, Profile: "production"})
+
+	if len(diags) != 1 {
+		t.Fatalf("expected 1 diagnostic for valid pipeline without batch, got %d", len(diags))
+	}
+}
+
+func TestMemLimiterMissing_SkipsEmptyPipeline(t *testing.T) {
+	cfg := relConfig()
+	setRelReceiver(cfg, "otlp", 2)
+	setRelExporter(cfg, "debug", nil, 10)
+	setRelPipeline(cfg, "empty", nil, nil, nil, 14)
+
+	g := graph.Build(cfg)
+	rule := NewMemLimiterMissingRule()
+	diags := rule.Check(RuleContext{Config: cfg, Graph: g, Profile: "production"})
+
+	if len(diags) != 0 {
+		t.Fatalf("expected 0 diagnostics for empty pipeline, got %d", len(diags))
+	}
+}
+
 func TestBatchBeforeTransform_NoTransform(t *testing.T) {
 	cfg := relConfig()
 	setRelReceiver(cfg, "otlp", 2)

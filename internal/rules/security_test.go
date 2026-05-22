@@ -379,6 +379,60 @@ func TestTLSMissingExporter_Localhost_OK(t *testing.T) {
 	}
 }
 
+func TestTLSMissingExporter_PlainHTTPSkipped(t *testing.T) {
+	cfg := relConfig()
+	setRelReceiver(cfg, "otlp", 2)
+	setRelExporter(cfg, "otlphttp", map[string]any{
+		"endpoint": "http://api.example.com:4318",
+	}, 10)
+	setRelPipeline(cfg, "traces", []string{"otlp"}, nil, []string{"otlphttp"}, 14)
+
+	g := graph.Build(cfg)
+	rule := NewTLSMissingExporterRule()
+	diags := rule.Check(RuleContext{Config: cfg, Graph: g, Profile: "production"})
+
+	if len(diags) != 0 {
+		t.Fatalf("expected 0 SEC-206 diagnostics for plain HTTP (handled by SEC-201), got %d", len(diags))
+	}
+}
+
+func TestTLSMissingExporter_HTTPSWithoutTLS(t *testing.T) {
+	cfg := relConfig()
+	setRelReceiver(cfg, "otlp", 2)
+	setRelExporter(cfg, "otlphttp", map[string]any{
+		"endpoint": "https://api.example.com:4318",
+	}, 10)
+	setRelPipeline(cfg, "traces", []string{"otlp"}, nil, []string{"otlphttp"}, 14)
+
+	g := graph.Build(cfg)
+	rule := NewTLSMissingExporterRule()
+	diags := rule.Check(RuleContext{Config: cfg, Graph: g, Profile: "production"})
+
+	if len(diags) != 1 {
+		t.Fatalf("expected 1 diagnostic for https:// without tls config, got %d", len(diags))
+	}
+}
+
+func TestTLSMissingExporter_HTTPAndHTTPS(t *testing.T) {
+	cfg := relConfig()
+	setRelReceiver(cfg, "otlp", 2)
+	setRelExporter(cfg, "otlphttp", map[string]any{
+		"endpoint": "http://api.example.com:4318",
+		"tls": map[string]any{
+			"insecure": true,
+		},
+	}, 10)
+	setRelPipeline(cfg, "traces", []string{"otlp"}, nil, []string{"otlphttp"}, 14)
+
+	g := graph.Build(cfg)
+	rule := NewTLSMissingExporterRule()
+	diags := rule.Check(RuleContext{Config: cfg, Graph: g, Profile: "production"})
+
+	if len(diags) != 0 {
+		t.Fatalf("expected 0 SEC-206 for http:// with tls key (plain HTTP handled by SEC-201), got %d", len(diags))
+	}
+}
+
 func TestAuthExtensionNotEnabled_Detected(t *testing.T) {
 	cfg := relConfig()
 	setRelReceiver(cfg, "otlp", 2)

@@ -1,7 +1,6 @@
 package autofix
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 	"strings"
@@ -52,7 +51,8 @@ func (f *Fixer) Fix(filePath string, diags []model.Diagnostic) ([]FixPlan, error
 		if f.dryRun {
 			plans[i].Diff = unifiedDiff(plans[i].FilePath, plans[i].Original, plans[i].Modified)
 		} else {
-			if err := os.WriteFile(plans[i].FilePath, plans[i].Modified, 0644); err != nil {
+			perm := originalPerm(plans[i].FilePath, 0644)
+			if err := os.WriteFile(plans[i].FilePath, plans[i].Modified, perm); err != nil {
 				return nil, fmt.Errorf("writing file: %w", err)
 			}
 			plans[i].Applied = true
@@ -77,6 +77,15 @@ func (f *Fixer) fixMemLimiterOrder(filePath string, data []byte) (*FixPlan, erro
 		return nil, nil
 	}
 
+	// Find the processor sequence node and locate memory_limiter position.
+	// Record the line number of the processors line and the mem_limiter item.
+	type procFix struct {
+		procLine    int // line of "processors: [a, b, ...]" in original YAML
+		newList     string
+	}
+
+	var fixes []procFix
+
 	serviceVal := findValue(root, "service")
 	if serviceVal == nil {
 		return nil, nil
@@ -86,24 +95,29 @@ func (f *Fixer) fixMemLimiterOrder(filePath string, data []byte) (*FixPlan, erro
 		return nil, nil
 	}
 
-	modified := false
-
 	for i := 0; i < len(pipelinesVal.Content)-1; i += 2 {
 		pipelineVal := pipelinesVal.Content[i+1]
 		if pipelineVal.Kind != yaml.MappingNode {
 			continue
 		}
 
-		processorsVal := findValue(pipelineVal, "processors")
-		if processorsVal == nil || processorsVal.Kind != yaml.SequenceNode {
+		procKey := findKey(pipelineVal, "processors")
+		if procKey == nil {
+			continue
+		}
+		procVal := findValue(pipelineVal, "processors")
+		if procVal == nil || procVal.Kind != yaml.SequenceNode {
 			continue
 		}
 
+		var ids []string
 		memIdx := -1
-		for idx, item := range processorsVal.Content {
-			if item.Kind == yaml.ScalarNode && processorType(item.Value) == "memory_limiter" {
-				memIdx = idx
-				break
+		for idx, item := range procVal.Content {
+			if item.Kind == yaml.ScalarNode {
+				ids = append(ids, item.Value)
+				if processorType(item.Value) == "memory_limiter" {
+					memIdx = idx
+				}
 			}
 		}
 
@@ -111,35 +125,48 @@ func (f *Fixer) fixMemLimiterOrder(filePath string, data []byte) (*FixPlan, erro
 			continue
 		}
 
-		node := processorsVal.Content[memIdx]
-		processorsVal.Content = append(
-			processorsVal.Content[:memIdx],
-			processorsVal.Content[memIdx+1:]...,
-		)
-		processorsVal.Content = append(
-			[]*yaml.Node{node},
-			processorsVal.Content...,
-		)
-		modified = true
+		mem := ids[memIdx]
+		newIDs := append([]string{mem}, ids[:memIdx]...)
+		newIDs = append(newIDs, ids[memIdx+1:]...)
+
+		newList := "[" + strings.Join(newIDs, ", ") + "]"
+
+		fixes = append(fixes, procFix{
+			procLine: procKey.Line,
+			newList:  newList,
+		})
 	}
 
-	if !modified {
+	if len(fixes) == 0 {
 		return nil, nil
 	}
 
-	var buf bytes.Buffer
-	enc := yaml.NewEncoder(&buf)
-	enc.SetIndent(2)
-	if err := enc.Encode(&doc); err != nil {
-		return nil, fmt.Errorf("encoding modified YAML: %w", err)
+	// Apply text-level edits: replace only the processor lines.
+	lines := strings.Split(string(data), "\n")
+	for _, fx := range fixes {
+		idx := fx.procLine - 1
+		if idx >= 0 && idx < len(lines) {
+			oldLine := lines[idx]
+			colon := strings.Index(oldLine, ":")
+			if colon >= 0 {
+				indent := oldLine[:colon]
+				lines[idx] = indent + ": " + fx.newList
+			}
+		}
 	}
-	enc.Close()
+	modified := []byte(strings.Join(lines, "\n"))
+
+	// Validate: parse the modified YAML to ensure it's valid.
+	var validate yaml.Node
+	if err := yaml.Unmarshal(modified, &validate); err != nil {
+		return nil, fmt.Errorf("autofix produced invalid YAML; aborting: %w", err)
+	}
 
 	return &FixPlan{
 		FilePath:    filePath,
 		Description: "Move memory_limiter to first position in processor chain",
 		Original:    data,
-		Modified:    buf.Bytes(),
+		Modified:    modified,
 	}, nil
 }
 
@@ -150,6 +177,18 @@ func findValue(node *yaml.Node, key string) *yaml.Node {
 	for i := 0; i < len(node.Content)-1; i += 2 {
 		if node.Content[i].Value == key {
 			return node.Content[i+1]
+		}
+	}
+	return nil
+}
+
+func findKey(node *yaml.Node, key string) *yaml.Node {
+	if node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i < len(node.Content)-1; i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i]
 		}
 	}
 	return nil
@@ -176,21 +215,24 @@ func unifiedDiff(file string, orig, mod []byte) string {
 	var out strings.Builder
 	out.WriteString(fmt.Sprintf("--- %s\n", file))
 	out.WriteString(fmt.Sprintf("+++ %s\n", file))
-	out.WriteString(fmt.Sprintf("@@ -1,%d +1,%d @@\n", len(origLines), len(modLines)))
+
+	// Compute hunk line ranges
+	origLen, modLen := len(origLines), len(modLines)
+	out.WriteString(fmt.Sprintf("@@ -1,%d +1,%d @@\n", origLen, modLen))
 
 	i, j := 0, 0
-	for i < len(origLines) || j < len(modLines) {
-		if i < len(origLines) && j < len(modLines) && origLines[i] == modLines[j] {
+	for i < origLen || j < modLen {
+		if i < origLen && j < modLen && origLines[i] == modLines[j] {
 			out.WriteString(" " + origLines[i])
 			i++
 			j++
-		} else if j < len(modLines) {
+		} else if j < modLen {
 			out.WriteString("+" + modLines[j])
 			j++
-			if i < len(origLines) && j < len(modLines) && origLines[i] == modLines[j] {
+			if i < origLen && j < modLen && origLines[i] == modLines[j] {
 				continue
 			}
-			if i < len(origLines) {
+			if i < origLen {
 				out.WriteString("-" + origLines[i])
 				i++
 			}
@@ -201,4 +243,12 @@ func unifiedDiff(file string, orig, mod []byte) string {
 	}
 
 	return out.String()
+}
+
+func originalPerm(path string, fallback os.FileMode) os.FileMode {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return fallback
+	}
+	return fi.Mode().Perm()
 }
