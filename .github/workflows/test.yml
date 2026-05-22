@@ -1,0 +1,29 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - name: Run tests
+        run: go test -race -count=1 ./...
+      - name: Build binary
+        run: go build -o bin/oteldoctor ./cmd/oteldoctor
+      - name: Smoke test (good config)
+        run: |
+          ./bin/oteldoctor analyze examples/good/collector-dev.yaml
+      - name: Smoke test (bad config, fail-on critical)
+        run: |
+          ./bin/oteldoctor analyze --fail-on critical examples/bad/structural.yaml
+      - name: Smoke test (production config)
+        run: |
+          ./bin/oteldoctor analyze --profile production examples/good/collector-production.yaml

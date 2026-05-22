@@ -1,0 +1,55 @@
+name: oteldoctor
+description: Analyze OpenTelemetry Collector configurations for production readiness
+author: firfircelik
+branding:
+  icon: check-circle
+  color: blue
+
+inputs:
+  path:
+    description: "Path to collector config file or directory"
+    required: true
+  profile:
+    description: "Analysis profile (development, staging, production)"
+    required: false
+    default: "development"
+  fail-on:
+    description: "Fail threshold (critical, high, medium, low)"
+    required: false
+    default: "low"
+  format:
+    description: "Output format (text, json, sarif)"
+    required: false
+    default: "text"
+  policy:
+    description: "Path to .oteldoctor.yaml policy file"
+    required: false
+    default: ""
+  version:
+    description: "oteldoctor version to use"
+    required: false
+    default: "latest"
+
+runs:
+  using: composite
+  steps:
+    - name: Install oteldoctor
+      shell: bash
+      run: |
+        if [ "${{ inputs.version }}" = "latest" ]; then
+          go install github.com/firfircelik/oteldoctor/cmd/oteldoctor@latest
+        else
+          go install github.com/firfircelik/oteldoctor/cmd/oteldoctor@${{ inputs.version }}
+        fi
+
+    - name: Run oteldoctor
+      shell: bash
+      run: |
+        ARGS="analyze ${{ inputs.path }}"
+        ARGS="$ARGS --profile ${{ inputs.profile }}"
+        ARGS="$ARGS --fail-on ${{ inputs.fail_on }}"
+        ARGS="$ARGS --format ${{ inputs.format }}"
+        if [ -n "${{ inputs.policy }}" ]; then
+          ARGS="$ARGS --policy ${{ inputs.policy }}"
+        fi
+        oteldoctor $ARGS
